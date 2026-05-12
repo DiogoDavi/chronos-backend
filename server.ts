@@ -42,7 +42,7 @@ app.get("/api/health", (_req, res) => {
 // ─── Rotas de API ─────────────────────────────────────────────────────────────
 async function loadRoutes() {
   const { default: romaneiosRoutes } = await import(
-    "./src/routes/romaneiosRoutes.ts"
+    "./src/routes/romaneiosRoutes"
   );
   app.use("/api/romaneios", romaneiosRoutes);
 }
