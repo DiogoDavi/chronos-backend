@@ -1,4 +1,4 @@
-export type Unit = 'JPA' | 'CPV' | 'REC' | 'MCZ' | 'AJU' | 'VIX' | 'FOR' | 'SLZ' | 'THE' | 'NAT' | 'CPG' | 'MSR';
+export type Unit = 'JPA' | 'NAT' | 'CPG' | 'MSR';
 
 export interface ServiceWindow {
   id: string;
