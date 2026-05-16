@@ -51,9 +51,9 @@ app.get("/api/session/status", async (_req, res) => {
     }
 });
 
-// ─── POST /api/session/reconnect ──────────────────────────────
-// AJUSTADO: Responde imediatamente para evitar timeout no frontend
-app.post("/api/session/reconnect", async (req, res) => {
+// ─── POST /api/romaneios/reconnect ────────────────────────────
+// AJUSTADO: Rota unificada com o prefixo /api/romaneios
+app.post("/api/romaneios/reconnect", async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
@@ -76,7 +76,7 @@ app.post("/api/session/reconnect", async (req, res) => {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ email, password, secret: INTERNAL_SECRET }),
-                signal: AbortSignal.timeout(60000) // 60 segundos de paciência interna
+                signal: AbortSignal.timeout(120000) // 2 minutos de paciência interna (previne falha em cold start)
             });
 
             if (!response.ok) {
