@@ -3,7 +3,6 @@ import express from "express";
 import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
 
-// ─── Configurações ───────────────────────────────────────────
 const supabase = createClient(
     process.env.SUPABASE_URL || '',
     process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || ''
@@ -15,15 +14,14 @@ const INTERNAL_SECRET = process.env.INTERNAL_SECRET || '';
 const app = express();
 const PORT = Number(process.env.PORT) || 3333;
 
-// ─── Middlewares ─────────────────────────────────────────────
-app.use(cors({ 
-    origin: '*', 
-    methods: ["GET","POST","PUT","DELETE","OPTIONS"], 
-    allowedHeaders: ["Content-Type","Authorization"] 
+app.use(cors({
+    origin: '*',
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"]
 }));
 app.use(express.json());
 
-// ─── Health Check ─────────────────────────────────────────────
+// ─── Health ───────────────────────────────────────────────────
 app.get("/api/health", (_req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
@@ -34,72 +32,109 @@ app.get("/api/session/status", async (_req, res) => {
         const { data } = await supabase
             .from("app_config")
             .select("key, value")
-            .in("key", ["session_status","mfa_code","mfa_message","last_sync","last_error"]);
+            .in("key", ["session_status", "mfa_code", "mfa_message", "last_sync", "last_error"]);
 
         const cfg: Record<string, string> = {};
         (data || []).forEach((r: any) => { cfg[r.key] = r.value; });
 
         res.json({
-            status:     cfg["session_status"] || "expired",
-            mfaCode:    cfg["mfa_code"]       || null,
-            mfaMessage: cfg["mfa_message"]    || null,
-            lastSync:   cfg["last_sync"]      || null,
-            lastError:  cfg["last_error"]     || null,
+            status: cfg["session_status"] || "expired",
+            mfaCode: cfg["mfa_code"] || null,
+            mfaMessage: cfg["mfa_message"] || null,
+            lastSync: cfg["last_sync"] || null,
+            lastError: cfg["last_error"] || null,
         });
-    } catch (err) {
+    } catch {
         res.json({ status: "expired", mfaCode: null, mfaMessage: null, lastSync: null, lastError: null });
     }
 });
 
 // ─── POST /api/romaneios/reconnect ────────────────────────────
-// AJUSTADO: Rota unificada com o prefixo /api/romaneios
-app.post("/api/romaneios/reconnect", async (req, res) => {
+app.post("/api/romaneios/reconnect", async (req: any, res: any) => {
     const { email, password } = req.body;
 
-    console.log("📥 [STEP 3] Backend recebeu requisição em /api/romaneios/reconnect");
-    console.log("📧 Email recebido:", email);
-    console.log("🔌 ONEDRIVE_READER_URL configurada:", ONEDRIVE_READER_URL);
-    console.log("🔑 INTERNAL_SECRET configurada?", !!INTERNAL_SECRET);
-
     if (!email || !password) {
-        console.warn("⚠️ [STEP 3] Rejeitando requisição: Email ou senha ausentes.");
         return res.status(400).json({ error: "Email e senha são obrigatórios" });
     }
 
     if (!ONEDRIVE_READER_URL) {
-        console.error("❌ [STEP 3] Erro de configuração: ONEDRIVE_READER_URL não definida!");
-        return res.status(500).json({ error: "ONEDRIVE_READER_URL não configurada" });
+        return res.status(500).json({ error: "ONEDRIVE_READER_URL não configurada no servidor" });
     }
 
-    // 1. Responde Sucesso IMEDIATAMENTE ao Frontend (Vercel)
-    console.log("📤 [STEP 3] Enviando resposta de sucesso imediato ao frontend...");
+    // Responde ao frontend imediatamente
     res.json({ success: true, message: "Comando de login enviado com sucesso." });
 
-    // 2. Executa a chamada pesada ao Reader em BACKGROUND
+    // Executa em background
     (async () => {
         try {
-            const targetReaderUrl = `${ONEDRIVE_READER_URL}/internal/start-login`;
-            console.log(`⚡ [Background] [STEP 4] Disparando chamada HTTP POST para o Reader em: ${targetReaderUrl}`);
-            
-            const response = await fetch(targetReaderUrl, {
+            // ── PASSO 1: acorda o Reader (cold start do Render) ──
+            // Faz ping no /health até responder, com timeout de 60s
+            console.log(`[Background] Acordando ONEDRIVE-READER...`);
+            const wakeStart = Date.now();
+
+            let readerAcordado = false;
+            while (Date.now() - wakeStart < 60000) {
+                try {
+                    const ping = await fetch(`${ONEDRIVE_READER_URL}/health`, {
+                        signal: AbortSignal.timeout(5000)
+                    });
+                    if (ping.ok) {
+                        readerAcordado = true;
+                        console.log(`[Background] Reader acordado em ${Date.now() - wakeStart}ms`);
+                        break;
+                    }
+                } catch {
+                    // ainda dormindo — aguarda 3s e tenta de novo
+                    await new Promise(r => setTimeout(r, 3000));
+                }
+            }
+
+            if (!readerAcordado) {
+                console.error("[Background] Reader não respondeu ao ping em 60s");
+                // Marca expired no Supabase para frontend não ficar preso
+                await supabase.from("app_config").upsert({
+                    key: "session_status", value: "expired",
+                    updated_at: new Date().toISOString()
+                });
+                await supabase.from("app_config").upsert({
+                    key: "last_error", value: "ONEDRIVE-READER não respondeu ao ping",
+                    updated_at: new Date().toISOString()
+                });
+                return;
+            }
+
+            // ── PASSO 2: dispara o login ──────────────────────────
+            console.log(`[Background] Enviando credenciais ao Reader...`);
+            const response = await fetch(`${ONEDRIVE_READER_URL}/internal/start-login`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ email, password, secret: INTERNAL_SECRET }),
-                signal: AbortSignal.timeout(120000) // 2 minutos de paciência interna (previne falha em cold start)
+                signal: AbortSignal.timeout(15000)
             });
 
             if (!response.ok) {
-                console.error(`❌ [Background] [STEP 4] OneDrive Reader respondeu com falha. HTTP status: ${response.status}`);
+                const body = await response.json().catch(() => ({}));
+                console.error(`[Background] Reader erro: ${response.status}`, body);
             } else {
-                console.log("✅ [Background] [STEP 4] OneDrive Reader acionado e respondeu com sucesso!");
+                console.log("[Background] Login iniciado no Reader com sucesso");
             }
+
         } catch (err: any) {
-            console.error("❌ [Background Error] [STEP 4] Falha na comunicação HTTP com o OneDrive Reader:", err.message);
+            console.error("[Background] Erro:", err.message);
+            // Garante que frontend não fique preso em pending
+            await supabase.from("app_config").upsert({
+                key: "session_status", value: "expired",
+                updated_at: new Date().toISOString()
+            }).catch(() => { });
+            await supabase.from("app_config").upsert({
+                key: "last_error", value: err.message,
+                updated_at: new Date().toISOString()
+            }).catch(() => { });
         }
     })();
 });
 
-// ─── Endpoints de Negócio (Romaneios) ─────────────────────────
+// ─── Premises ─────────────────────────────────────────────────
 app.get("/api/romaneios/premises", async (_req, res) => {
     try {
         const { data: premisesData, error: e1 } = await supabase.from("unit_premises").select("*");
@@ -112,6 +147,7 @@ app.get("/api/romaneios/premises", async (_req, res) => {
     }
 });
 
+// ─── Filtros ──────────────────────────────────────────────────
 app.get("/api/romaneios/filters", async (_req, res) => {
     try {
         const { data, error } = await supabase.from("vw_romaneios_filtros").select("*");
@@ -122,19 +158,20 @@ app.get("/api/romaneios/filters", async (_req, res) => {
     }
 });
 
+// ─── Dashboard ────────────────────────────────────────────────
 app.post("/api/romaneios/dashboard", async (req, res) => {
     try {
         const { filters = {}, from, to } = req.body;
         let query = supabase.from("view_painel_operacoes").select("*", { count: "exact" });
 
-        if (filters.unit?.length)          query = query.in("unit", filters.unit);
-        if (filters.priority?.length)      query = query.in("priority", filters.priority);
+        if (filters.unit?.length) query = query.in("unit", filters.unit);
+        if (filters.priority?.length) query = query.in("priority", filters.priority);
         if (filters.transportador?.length) query = query.in("carrier", filters.transportador);
-        if (filters.material?.length)      query = query.in("material", filters.material);
-        if (filters.area?.length)          query = query.in("area", filters.area);
-        if (filters.year?.length)          query = query.in("ano", filters.year.map(Number));
-        if (filters.month?.length)         query = query.in("mes", filters.month.map(Number));
-        if (filters.day?.length)           query = query.in("dia", filters.day.map(Number));
+        if (filters.material?.length) query = query.in("material", filters.material);
+        if (filters.area?.length) query = query.in("area", filters.area);
+        if (filters.year?.length) query = query.in("ano", filters.year.map(Number));
+        if (filters.month?.length) query = query.in("mes", filters.month.map(Number));
+        if (filters.day?.length) query = query.in("dia", filters.day.map(Number));
         if (from !== undefined && to !== undefined) query = query.range(from, to);
 
         const { data, error, count } = await query
@@ -150,9 +187,8 @@ app.post("/api/romaneios/dashboard", async (req, res) => {
     }
 });
 
-// ─── Inicialização ───────────────────────────────────────────
 app.get("/", (_req, res) => res.send("🚀 Chronos Logistics API Online"));
 
 app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[Chronos Backend] Servidor rodando na porta ${PORT}`);
+    console.log(`[Chronos Backend] Porta ${PORT}`);
 });
