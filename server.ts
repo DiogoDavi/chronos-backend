@@ -56,23 +56,32 @@ app.get("/api/session/status", async (_req, res) => {
 app.post("/api/romaneios/reconnect", async (req, res) => {
     const { email, password } = req.body;
 
+    console.log("📥 [STEP 3] Backend recebeu requisição em /api/romaneios/reconnect");
+    console.log("📧 Email recebido:", email);
+    console.log("🔌 ONEDRIVE_READER_URL configurada:", ONEDRIVE_READER_URL);
+    console.log("🔑 INTERNAL_SECRET configurada?", !!INTERNAL_SECRET);
+
     if (!email || !password) {
+        console.warn("⚠️ [STEP 3] Rejeitando requisição: Email ou senha ausentes.");
         return res.status(400).json({ error: "Email e senha são obrigatórios" });
     }
 
     if (!ONEDRIVE_READER_URL) {
+        console.error("❌ [STEP 3] Erro de configuração: ONEDRIVE_READER_URL não definida!");
         return res.status(500).json({ error: "ONEDRIVE_READER_URL não configurada" });
     }
 
     // 1. Responde Sucesso IMEDIATAMENTE ao Frontend (Vercel)
+    console.log("📤 [STEP 3] Enviando resposta de sucesso imediato ao frontend...");
     res.json({ success: true, message: "Comando de login enviado com sucesso." });
 
     // 2. Executa a chamada pesada ao Reader em BACKGROUND
     (async () => {
         try {
-            console.log(`[Background] Iniciando chamada ao Reader: ${ONEDRIVE_READER_URL}`);
+            const targetReaderUrl = `${ONEDRIVE_READER_URL}/internal/start-login`;
+            console.log(`⚡ [Background] [STEP 4] Disparando chamada HTTP POST para o Reader em: ${targetReaderUrl}`);
             
-            const response = await fetch(`${ONEDRIVE_READER_URL}/internal/start-login`, {
+            const response = await fetch(targetReaderUrl, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ email, password, secret: INTERNAL_SECRET }),
@@ -80,12 +89,12 @@ app.post("/api/romaneios/reconnect", async (req, res) => {
             });
 
             if (!response.ok) {
-                console.error(`[Background] Reader retornou erro: ${response.status}`);
+                console.error(`❌ [Background] [STEP 4] OneDrive Reader respondeu com falha. HTTP status: ${response.status}`);
             } else {
-                console.log("[Background] Reader acionado com sucesso");
+                console.log("✅ [Background] [STEP 4] OneDrive Reader acionado e respondeu com sucesso!");
             }
         } catch (err: any) {
-            console.error("[Background Error]:", err.message);
+            console.error("❌ [Background Error] [STEP 4] Falha na comunicação HTTP com o OneDrive Reader:", err.message);
         }
     })();
 });
